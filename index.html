@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visor de Logs NextDNS</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <style>
+        .adult { background-color: #ffcccc; }
+        .modal-body table { width: 100%; }
+    </style>
+</head>
+<body class="container my-4">
+    <h1>Visor de Logs NextDNS</h1>
+    
+    <div class="mb-3">
+        <label for="fileInput" class="form-label">Cargar archivo (.csv, .log, .txt)</label>
+        <input type="file" id="fileInput" class="form-control" accept=".csv,.log,.txt">
+    </div>
+    
+    <div id="filters" class="row mb-3" style="display: none;">
+        <div class="col-md-3">
+            <label for="fromDate">Desde (fecha/hora):</label>
+            <input type="datetime-local" id="fromDate" class="form-control">
+        </div>
+        <div class="col-md-3">
+            <label for="toDate">Hasta (fecha/hora):</label>
+            <input type="datetime-local" id="toDate" class="form-control">
+        </div>
+        <div class="col-md-3">
+            <label for="domainFilter">Dominio/URL:</label>
+            <input type="text" id="domainFilter" class="form-control">
+        </div>
+        <div class="col-md-3">
+            <label for="deviceFilter">Dispositivo:</label>
+            <input type="text" id="deviceFilter" class="form-control">
+        </div>
+        <div class="col-md-2">
+            <label for="timeShift">Ajuste horario (horas):</label>
+            <input type="number" id="timeShift" class="form-control" value="0">
+        </div>
+        <div class="col-md-2 form-check mt-4">
+            <input type="checkbox" id="showIP" class="form-check-input">
+            <label for="showIP" class="form-check-label">Mostrar IP</label>
+        </div>
+        <div class="col-md-2 form-check mt-4">
+            <input type="checkbox" id="showDesc" class="form-check-input">
+            <label for="showDesc" class="form-check-label">Mostrar descripción (razón)</label>
+        </div>
+        <div class="col-md-2 form-check mt-4">
+            <input type="checkbox" id="showFullURL" class="form-check-input">
+            <label for="showFullURL" class="form-check-label">Mostrar URL exacta</label>
+        </div>
+        <div class="col-md-2 mt-4">
+            <button id="applyFilters" class="btn btn-primary">Aplicar filtros</button>
+        </div>
+    </div>
+    
+    <div id="paginationTop" class="d-flex justify-content-between mb-2" style="display: none;"></div>
+    <table id="logsTable" class="table table-striped" style="display: none;">
+        <thead>
+            <tr>
+                <th>Fecha/Hora</th>
+                <th>Dominio</th>
+                <th>Dispositivo</th>
+                <th>Estado</th>
+                <th>Categoría</th>
+                <th>IP</th>
+                <th>Descripción</th>
+                <th>Contexto</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <div id="paginationBottom" class="d-flex justify-content-between mt-2" style="display: none;"></div>
+    
+    <!-- Modal para contexto -->
+    <div class="modal fade" id="contextModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Registros cercanos</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Fecha/Hora</th>
+                                <th>Dominio</th>
+                                <th>Dispositivo</th>
+                                <th>Estado</th>
+                                <th>Categoría</th>
+                                <th>IP</th>
+                                <th>Descripción</th>
+                            </tr>
+                        </thead>
+                        <tbody id="contextBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let data = [];
+        let filteredData = [];
+        let adultDomains = new Set();
+        let currentPage = 1;
+        const rowsPerPage = 100;
+        const categories = {
+            'google.com': 'Búsqueda',
+            'facebook.com': 'Social',
+            'netflix.com': 'Streaming',
+            'tinder.com': 'Citas',
+            'youtube.com': 'Video',
+            'amazon.com': 'Compras',
+            'twitter.com': 'Social',
+            'instagram.com': 'Social',
+            'whatsapp.com': 'Mensajería',
+            'spotify.com': 'Música',
+            'apple.com': 'Tecnología',
+            'microsoft.com': 'Tecnología',
+            'github.com': 'Desarrollo',
+            'linkedin.com': 'Profesional',
+            'reddit.com': 'Foros',
+            // Añade más según necesites
+        };
+
+        async function loadAdultDomains() {
+            try {
+                const metaResponse = await fetch('https://raw.githubusercontent.com/Bon-Appetit/porn-domains/main/meta.json');
+                const meta = await metaResponse.json();
+                const blockFile = meta.block.filename; // Asumiendo estructura {block: {filename: 'block.xxx.txt'}}
+                const listResponse = await fetch(`https://raw.githubusercontent.com/Bon-Appetit/porn-domains/main/${blockFile}`);
+                const listText = await listResponse.text();
+                listText.split('\n').forEach(line => {
+                    const domain = line.trim();
+                    if (domain) adultDomains.add(domain);
+                });
+            } catch (e) {
+                console.error('Error cargando lista de dominios adultos:', e);
+            }
+        }
+
+        loadAdultDomains();
+
+        document.getElementById('fileInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                complete: (results) => {
+                    data = results.data;
+                    filteredData = data;
+                    document.getElementById('filters').style.display = 'block';
+                    applyFilters();
+                },
+                error: (err) => console.error('Error parseando CSV:', err)
+            });
+        });
+
+        function applyFilters() {
+            const fromDate = new Date(document.getElementById('fromDate').value);
+            const toDate = new Date(document.getElementById('toDate').value);
+            const domainFilter = document.getElementById('domainFilter').value.toLowerCase();
+            const deviceFilter = document.getElementById('deviceFilter').value.toLowerCase();
+            const timeShift = parseInt(document.getElementById('timeShift').value) || 0;
+
+            filteredData = data.filter(row => {
+                const ts = new Date(row.timestamp);
+                ts.setHours(ts.getHours() + timeShift);
+                if (!isNaN(fromDate) && ts < fromDate) return false;
+                if (!isNaN(toDate) && ts > toDate) return false;
+                if (domainFilter && !row.domain.toLowerCase().includes(domainFilter)) return false;
+                if (deviceFilter && !row.device_name.toLowerCase().includes(deviceFilter)) return false;
+                return true;
+            });
+
+            currentPage = 1;
+            renderTable();
+        }
+
+        function renderTable() {
+            const tbody = document.querySelector('#logsTable tbody');
+            tbody.innerHTML = '';
+            const showIP = document.getElementById('showIP').checked;
+            const showDesc = document.getElementById('showDesc').checked;
+            const showFullURL = document.getElementById('showFullURL').checked;
+
+            const start = (currentPage - 1) * rowsPerPage;
+            const end = start + rowsPerPage;
+            const pageData = filteredData.slice(start, end);
+
+            pageData.forEach((row, index) => {
+                const ts = new Date(row.timestamp);
+                const timeShift = parseInt(document.getElementById('timeShift').value) || 0;
+                ts.setHours(ts.getHours() + timeShift);
+                const domainDisplay = showFullURL ? row.domain : row.root_domain || row.domain;
+                const root = row.root_domain || domainDisplay.split('.').slice(-2).join('.');
+                const category = categories[root] || '';
+                const isAdult = adultDomains.has(root);
+                const favicon = `https://www.google.com/s2/favicons?sz=16&domain=${root}`;
+
+                const tr = document.createElement('tr');
+                if (isAdult) tr.classList.add('adult');
+                tr.innerHTML = `
+                    <td>${ts.toLocaleString()}</td>
+                    <td><img src="${favicon}" alt=""> ${domainDisplay}</td>
+                    <td>${row.device_name || ''}</td>
+                    <td>${row.status || ''}</td>
+                    <td>${category}</td>
+                    ${showIP ? `<td>${row.client_ip || ''}</td>` : '<td style="display:none;"></td>'}
+                    ${showDesc ? `<td>${row.reasons || ''}</td>` : '<td style="display:none;"></td>'}
+                    <td><button class="btn btn-sm btn-info context-btn" data-index="${start + index}">🕵️</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            document.querySelectorAll('.context-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const idx = parseInt(e.target.dataset.index);
+                    showContext(idx);
+                });
+            });
+
+            renderPagination();
+            document.getElementById('logsTable').style.display = 'table';
+        }
+
+        function renderPagination() {
+            const totalPages = Math.ceil(filteredData.length / rowsPerPage);
+            const pagHtml = `
+                <button class="btn btn-secondary" ${currentPage === 1 ? 'disabled' : ''} onclick="prevPage()">Página anterior</button>
+                <span>Página ${currentPage} de ${totalPages}</span>
+                <button class="btn btn-secondary" ${currentPage === totalPages ? 'disabled' : ''} onclick="nextPage()">Página siguiente</button>
+            `;
+            document.getElementById('paginationTop').innerHTML = pagHtml;
+            document.getElementById('paginationBottom').innerHTML = pagHtml;
+            document.getElementById('paginationTop').style.display = 'flex';
+            document.getElementById('paginationBottom').style.display = 'flex';
+        }
+
+        function prevPage() {
+            if (currentPage > 1) {
+                currentPage--;
+                renderTable();
+            }
+        }
+
+        function nextPage() {
+            const totalPages = Math.ceil(filteredData.length / rowsPerPage);
+            if (currentPage < totalPages) {
+                currentPage++;
+                renderTable();
+            }
+        }
+
+        function showContext(index) {
+            const contextBody = document.getElementById('contextBody');
+            contextBody.innerHTML = '';
+            const showIP = document.getElementById('showIP').checked;
+            const showDesc = document.getElementById('showDesc').checked;
+            const showFullURL = document.getElementById('showFullURL').checked;
+
+            const start = Math.max(0, index - 5);
+            const end = Math.min(filteredData.length, index + 6);
+            for (let i = start; i < end; i++) {
+                const row = filteredData[i];
+                const ts = new Date(row.timestamp);
+                const timeShift = parseInt(document.getElementById('timeShift').value) || 0;
+                ts.setHours(ts.getHours() + timeShift);
+                const domainDisplay = showFullURL ? row.domain : row.root_domain || row.domain;
+                const root = row.root_domain || domainDisplay.split('.').slice(-2).join('.');
+                const category = categories[root] || '';
+                const isAdult = adultDomains.has(root);
+                const favicon = `https://www.google.com/s2/favicons?sz=16&domain=${root}`;
+
+                const tr = document.createElement('tr');
+                if (i === index) tr.style.backgroundColor = '#ffffcc';
+                if (isAdult) tr.classList.add('adult');
+                tr.innerHTML = `
+                    <td>${ts.toLocaleString()}</td>
+                    <td><img src="${favicon}" alt=""> ${domainDisplay}</td>
+                    <td>${row.device_name || ''}</td>
+                    <td>${row.status || ''}</td>
+                    <td>${category}</td>
+                    ${showIP ? `<td>${row.client_ip || ''}</td>` : ''}
+                    ${showDesc ? `<td>${row.reasons || ''}</td>` : ''}
+                `;
+                contextBody.appendChild(tr);
+            }
+            new bootstrap.Modal(document.getElementById('contextModal')).show();
+        }
+
+        document.getElementById('applyFilters').addEventListener('click', applyFilters);
+        document.querySelectorAll('#filters input').forEach(input => {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') applyFilters();
+            });
+        });
+    </script>
+</body>
+</html>
